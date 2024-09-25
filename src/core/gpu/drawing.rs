@@ -37,9 +37,10 @@ pub struct DrawCanvas {
     pub output_height: usize,
     pub scale: usize,
     pub has_any_pixels: bool,
-    buffer: Vec<u8>,
+    //需要公开
+    pub buffer: Vec<u8>,
 
-    drawing_cleared: AtomicBool,
+    pub drawing_cleared: AtomicBool,
 }
 
 impl DrawCanvas {
