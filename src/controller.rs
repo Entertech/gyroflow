@@ -139,7 +139,7 @@ pub struct Controller {
 
     lens_correction_amount: qt_property!(f64; WRITE set_lens_correction_amount),
     light_refraction_coefficient: qt_property!(f64; WRITE set_light_refraction_coefficient),
-    set_video_speed: qt_method!(fn(&self, v: f64, s: bool, z: bool)),
+    set_video_speed: qt_method!(fn(&self, v: f64, s: bool, z: bool, zl: bool)),
     set_max_zoom: qt_method!(fn(&self, v: f64, iters: usize)),
 
     input_horizontal_stretch: qt_property!(f64; WRITE set_input_horizontal_stretch),
@@ -234,7 +234,7 @@ pub struct Controller {
     copy_to_clipboard: qt_method!(fn(&self, text: QString)),
 
     image_to_b64: qt_method!(fn(&self, img: QImage) -> QString),
-    export_preset: qt_method!(fn(&self, url: QUrl, data: QJsonObject)),
+    export_preset: qt_method!(fn(&self, url: QUrl, data: QJsonObject, save_type: QString, preset_name: QString) -> QString),
     export_full_metadata: qt_method!(fn(&self, url: QUrl, gyro_url: QUrl)),
     export_parsed_metadata: qt_method!(fn(&self, url: QUrl)),
     export_gyro_data: qt_method!(fn(&self, url: QUrl, data: QJsonObject)),
@@ -264,6 +264,10 @@ pub struct Controller {
 
     mp4_merge: qt_method!(fn(&self, file_list: QStringList, output_folder: QUrl, output_filename: QString)),
     mp4_merge_progress: qt_signal!(percent: f64, error_string: QString, url: QString),
+
+    is_nle_installed: qt_method!(fn(&self) -> bool),
+    nle_plugins: qt_method!(fn(&self, command: QString, typ: QString) -> QString),
+    nle_plugins_result: qt_signal!(command: QString, result: QString),
 
     has_per_frame_lens_data: qt_method!(fn(&self) -> bool),
     export_stmap: qt_method!(fn(&self, folder_url: QUrl, per_frame: bool)),
@@ -326,7 +330,8 @@ impl Controller {
             url: url.clone(),
             project_file_url: None,
             image_sequence_start: self.image_sequence_start,
-            image_sequence_fps: self.image_sequence_fps
+            image_sequence_fps: self.image_sequence_fps,
+            preset_name: None
         };
         self.input_file_url_changed();
         self.project_file_url_changed();
@@ -842,7 +847,11 @@ impl Controller {
     fn load_default_preset(&mut self) {
         // Assumes regular filesystem
         let local_path = gyroflow_core::lens_profile_database::LensProfileDatabase::get_path().join("default.gyroflow");
-        if local_path.exists() {
+
+        let settings_path = gyroflow_core::settings::data_dir().join("lens_profiles").join("default.gyroflow");
+        if settings_path.exists() {
+            self.import_gyroflow_file(QUrl::from(QString::from(filesystem::path_to_url(&settings_path.to_string_lossy()))));
+        } else if local_path.exists() {
             self.import_gyroflow_file(QUrl::from(QString::from(filesystem::path_to_url(&local_path.to_string_lossy()))));
         }
     }
@@ -1403,7 +1412,7 @@ impl Controller {
     wrap_simple_method!(set_background_mode,           v: i32; recompute);
     wrap_simple_method!(set_background_margin,         v: f64; recompute);
     wrap_simple_method!(set_background_margin_feather, v: f64; recompute);
-    wrap_simple_method!(set_video_speed,               v: f64, s: bool, z: bool; recompute; zooming_data_changed);
+    wrap_simple_method!(set_video_speed,               v: f64, s: bool, z: bool, zl: bool; recompute; zooming_data_changed);
 
     wrap_simple_method!(set_offset, timestamp_us: i64, offset_ms: f64; recompute; update_offset_model);
     wrap_simple_method!(clear_offsets,; recompute; update_offset_model);
@@ -1823,11 +1832,6 @@ impl Controller {
 
     #[allow(unreachable_code)]
     fn fetch_profiles_from_github(&self) {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        {
-            return;
-        }
-
         use crate::core::lens_profile_database::LensProfileDatabase;
 
         if LensProfileDatabase::get_path().join("noupdate").exists() {
@@ -1842,7 +1846,7 @@ impl Controller {
         let current_version = self.stabilizer.lens_profile_db.read().version;
 
         let db_path = LensProfileDatabase::get_path().join("profiles.cbor.gz");
-        if db_path.exists() {
+        if db_path.exists() || gyroflow_core::settings::data_dir().join("lens_profiles").exists() {
             core::run_threaded(move || {
                 if let Ok(Ok(body)) = ureq::get("https://api.github.com/repos/gyroflow/lens_profiles/releases").call().map(|x| x.into_string()) {
                     (|| -> Option<()> {
@@ -1854,9 +1858,20 @@ impl Controller {
                                     ::log::info!("Updating lens profile database from v{current_version} to v{tag}.");
                                     if let Some(download_url) = obj["assets"][0]["browser_download_url"].as_str() {
                                         if let Ok(mut content) = ureq::get(&download_url).call().map(|x| x.into_reader()) {
-                                            if let Ok(mut file) = std::fs::File::create(&db_path) {
-                                                if std::io::copy(&mut content, &mut file).is_ok() {
-                                                    update(());
+                                            let mut updated = false;
+                                            if db_path.exists() {
+                                                if let Ok(mut file) = std::fs::File::create(&db_path) {
+                                                    if std::io::copy(&mut content, &mut file).is_ok() {
+                                                        updated = true;
+                                                        update(());
+                                                    }
+                                                }
+                                            }
+                                            if !updated {
+                                                if let Ok(mut file) = std::fs::File::create(gyroflow_core::settings::data_dir().join("lens_profiles").join("profiles.cbor.gz")) {
+                                                    if std::io::copy(&mut content, &mut file).is_ok() {
+                                                        update(());
+                                                    }
                                                 }
                                             }
                                         }
@@ -1904,11 +1919,26 @@ impl Controller {
         rendering::set_gpu_type_from_name(&name);
     }
 
-    fn export_preset(&self, url: QUrl, content: QJsonObject) {
+    fn export_preset(&self, url: QUrl, content: QJsonObject, save_type: QString, preset_name: QString) -> QString {
+        let save_type = save_type.to_string();
+        let mut url = util::qurl_to_encoded(url);
+        if url.is_empty() {
+            let path = gyroflow_core::settings::data_dir().join("lens_profiles");
+            match save_type.as_ref() {
+                "lens" => {
+                    url = filesystem::path_to_url(path.join(&format!("{preset_name}.gyroflow")).to_str().unwrap_or_default())
+                },
+                "default" => {
+                    url = filesystem::path_to_url(path.join("default.gyroflow").to_str().unwrap_or_default())
+                }
+                _ => { ::log::error!("Unknown save_type: {save_type}"); }
+            }
+        }
         let contents = content.to_json_pretty();
-        if let Err(e) = filesystem::write(&util::qurl_to_encoded(url), contents.to_slice()) {
+        if let Err(e) = filesystem::write(&url, contents.to_slice()) {
             self.error(QString::from("An error occured: %1"), QString::from(e.to_string()), QString::default());
         }
+        QString::from(filesystem::display_url(&url))
     }
 
     fn export_full_metadata(&self, url: QUrl, gyro_url: QUrl) {
@@ -2231,6 +2261,47 @@ impl Controller {
             }
             progress((total, total));
         });
+    }
+
+    fn is_nle_installed(&self) -> bool {
+        #[cfg(any(target_os = "windows", target_os = "macos"))] {
+            crate::nle_plugins::is_nle_installed("openfx") || crate::nle_plugins::is_nle_installed("adobe")
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))] { false }
+    }
+    fn nle_plugins(&self, command: QString, typ: QString) -> QString {
+        #[cfg(any(target_os = "windows", target_os = "macos"))] {
+            let typ = typ.to_string();
+            let command = command.to_string();
+            let result = match command.as_ref() {
+                "install" | "latest_version" => {
+                    let command2 = QString::from(command.clone());
+                    let signal = util::qt_queued_callback_mut(self, move |this, r: String| {
+                        this.nle_plugins_result(command2.clone(), QString::from(r));
+                    });
+                    core::run_threaded(move || {
+                        let result = match command.as_ref() {
+                            "install" => crate::nle_plugins::install(&typ),
+                            "latest_version" => crate::nle_plugins::latest_version().ok_or(std::io::Error::new(std::io::ErrorKind::Other, "Failed to check version")),
+                            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, format!("Unknown command {command}")))
+                        };
+                        match result {
+                            Ok(r) => signal(r),
+                            Err(e) => signal(format!("An error occured: {e:?}"))
+                        }
+                    });
+                    Ok(String::new())
+                }
+                "detect" => crate::nle_plugins::detect(&typ),
+                "is_nle_installed" => Ok(format!("{}", crate::nle_plugins::is_nle_installed(&typ))),
+                _ => Err(std::io::Error::new(std::io::ErrorKind::Other, format!("Unknown command {command}")))
+            };
+            match result {
+                Ok(r) => QString::from(r),
+                Err(e) => QString::from(format!("An error occured: {e:?}"))
+            }
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))] { QString::default() }
     }
 
     // Utilities

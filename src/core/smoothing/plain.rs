@@ -15,7 +15,7 @@ pub struct Plain {
 impl Default for Plain {
     fn default() -> Self { Self {
         time_constant: 0.25,
-        trim_range_only: false,
+        trim_range_only: true,
     } }
 }
 
@@ -70,12 +70,12 @@ impl SmoothingAlgorithm for Plain {
         hasher.finish()
     }
 
-    fn smooth(&self, quats: &TimeQuat, duration: f64, compute_params: &ComputeParams) -> TimeQuat { // TODO Result<>?
-        if quats.is_empty() || duration <= 0.0 { return quats.clone(); }
+    fn smooth(&self, quats: &TimeQuat, duration_ms: f64, compute_params: &ComputeParams) -> TimeQuat { // TODO Result<>?
+        if quats.is_empty() || duration_ms <= 0.0 { return quats.clone(); }
 
         let keyframes = &compute_params.keyframes;
 
-        let sample_rate: f64 = quats.len() as f64 / (duration / 1000.0);
+        let sample_rate: f64 = quats.len() as f64 / (duration_ms / 1000.0);
 
         let get_alpha = |time_constant: f64| {
             1.0 - (-(1.0 / sample_rate) / time_constant).exp()
@@ -85,7 +85,7 @@ impl SmoothingAlgorithm for Plain {
             alpha = get_alpha(self.time_constant);
         }
 
-        let quats = Smoothing::get_trimmed_quats(quats, duration, self.trim_range_only, &compute_params.trim_ranges);
+        let quats = Smoothing::get_trimmed_quats(quats, compute_params.scaled_duration_ms, self.trim_range_only, &compute_params.trim_ranges);
         let quats = quats.as_ref();
 
         let mut alpha_per_timestamp = BTreeMap::<i64, f64>::new();
@@ -96,7 +96,7 @@ impl SmoothingAlgorithm for Plain {
                 let mut val = keyframes.value_at_gyro_timestamp(&KeyframeType::SmoothingParamTimeConstant, timestamp_ms).unwrap_or(self.time_constant);
 
                 if compute_params.video_speed_affects_smoothing {
-                    let vid_speed = keyframes.value_at_gyro_timestamp(&KeyframeType::VideoSpeed, timestamp_ms).unwrap_or(compute_params.video_speed);
+                    let vid_speed = keyframes.value_at_gyro_timestamp(&KeyframeType::VideoSpeed, timestamp_ms).unwrap_or(compute_params.video_speed).abs();
                     val *= vid_speed;
                 }
 

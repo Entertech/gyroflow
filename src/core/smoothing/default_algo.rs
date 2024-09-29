@@ -45,7 +45,7 @@ impl Default for DefaultAlgo {
         smoothness_roll: 0.5,
         per_axis: false,
         second_pass: true,
-        trim_range_only: false,
+        trim_range_only: true,
         max_smoothness: 1.0,
         alpha_0_1s: 0.1
     } }
@@ -210,10 +210,10 @@ impl SmoothingAlgorithm for DefaultAlgo {
         hasher.finish()
     }
 
-    fn smooth(&self, quats: &TimeQuat, duration: f64, compute_params: &ComputeParams) -> TimeQuat { // TODO Result<>?
-        if quats.is_empty() || duration <= 0.0 { return quats.clone(); }
+    fn smooth(&self, quats: &TimeQuat, duration_ms: f64, compute_params: &ComputeParams) -> TimeQuat { // TODO Result<>?
+        if quats.is_empty() || duration_ms <= 0.0 { return quats.clone(); }
 
-        let sample_rate: f64 = quats.len() as f64 / (duration / 1000.0);
+        let sample_rate: f64 = quats.len() as f64 / (duration_ms / 1000.0);
         let rad_to_deg_per_sec: f64 = sample_rate * RAD_TO_DEG;
 
         let get_alpha = |time_constant: f64| {
@@ -223,7 +223,7 @@ impl SmoothingAlgorithm for DefaultAlgo {
 
         let keyframes = &compute_params.keyframes;
 
-        let quats = Smoothing::get_trimmed_quats(quats, duration, self.trim_range_only, &compute_params.trim_ranges);
+        let quats = Smoothing::get_trimmed_quats(quats, compute_params.scaled_duration_ms, self.trim_range_only, &compute_params.trim_ranges);
         let quats = quats.as_ref();
 
         let get_keyframed_param = |typ: &KeyframeType, def: f64, cb: &dyn Fn(f64) -> f64| -> BTreeMap<i64, f64> {
@@ -233,7 +233,7 @@ impl SmoothingAlgorithm for DefaultAlgo {
                     let timestamp_ms = *ts as f64 / 1000.0;
                     let mut val = keyframes.value_at_gyro_timestamp(typ, timestamp_ms).unwrap_or(def);
                     if compute_params.video_speed_affects_smoothing {
-                        let vid_speed = keyframes.value_at_gyro_timestamp(&KeyframeType::VideoSpeed, timestamp_ms).unwrap_or(compute_params.video_speed);
+                        let vid_speed = keyframes.value_at_gyro_timestamp(&KeyframeType::VideoSpeed, timestamp_ms).unwrap_or(compute_params.video_speed).abs();
                         if typ == &KeyframeType::SmoothingParamTimeConstant || typ == &KeyframeType::SmoothingParamTimeConstant2 {
                             val *= 1.0 + ((vid_speed - 1.0) / 2.0);
                         } else {

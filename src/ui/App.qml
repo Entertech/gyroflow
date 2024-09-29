@@ -59,6 +59,8 @@ Rectangle {
             stab    .parent = paramsTab.inner;
             stabHr  .parent = paramsTab.inner;
             advanced.parent = paramsTab.inner;
+            advancedHr.parent = paramsTab.inner;
+            nlePlugins.parent = paramsTab.inner;
 
             outputPathLabel.parent = exportTab.inner;
             renderBtnRow   .parent = exportTab.inner;
@@ -77,6 +79,8 @@ Rectangle {
             exportSettings.parent = rightPanel.col;
             exportHr      .parent = rightPanel.col;
             advanced      .parent = rightPanel.col;
+            advancedHr    .parent = rightPanel.col;
+            nlePlugins    .parent = rightPanel.col;
 
             outputPathLabel.parent = exportbar;
             renderBtnRow   .parent = exportbar;
@@ -424,8 +428,31 @@ Rectangle {
                                             finalData.synchronization.do_autosync = true;
                                         }
                                         if (action == "create_preset") { // Preset
-                                            presetFileDialog.presetData = finalData;
-                                            presetFileDialog.open2();
+                                            if (obj.save_type == "file") {
+                                                presetFileDialog.presetData = finalData;
+                                                presetFileDialog.open2();
+                                            } else if (obj.save_type == "default") {
+                                                finalData.name = "Default preset";
+                                                const saved_to = controller.export_preset("", finalData, obj.save_type, "");
+                                                showNotification(Modal.Info, qsTr("Preset saved to %1").arg("<b>" + saved_to + "</b>"))
+                                            } else {
+                                                const dlg = messageBox(Modal.Info, qsTr("Enter the name for the preset: "), [
+                                                    { text: qsTr("Ok"), accent: true, clicked: function() {
+                                                        let name = dlg.mainColumn.children[1].text;
+                                                        if (!name) {
+                                                            messageBox(Modal.Error, qsTr("Name cannot be empty."), [ { text: qsTr("Ok") } ]);
+                                                            return false;
+                                                        }
+                                                        finalData.name = name;
+                                                        const saved_to = controller.export_preset("", finalData, obj.save_type, name);
+                                                        showNotification(Modal.Info, qsTr("Preset saved to %1").arg("<b>" + saved_to + "</b>"))
+                                                    } },
+                                                    { text: qsTr("Cancel") },
+                                                ]);
+                                                const tf = Qt.createComponent("components/TextField.qml").createObject(dlg.mainColumn, { });
+                                                tf.anchors.horizontalCenter = dlg.mainColumn.horizontalCenter;
+                                                tf.focus = true;
+                                            }
                                         } else { // Apply
                                             render_queue.apply_to_all(JSON.stringify(finalData), window.getAdditionalProjectDataJson(), 0);
                                         }
@@ -485,6 +512,8 @@ Rectangle {
             ItemLoader { id: exportSettings; sourceComponent: Component { Menu.Export { showBtn: !window.isMobileLayout; } } }
             Hr { id: exportHr; visible: !isMobileLayout; }
             ItemLoader { id: advanced; sourceComponent: Component { Menu.Advanced { } } }
+            Hr { id: advancedHr; visible: nlePlugins.active }
+            ItemLoader { id: nlePlugins; active: controller.is_nle_installed(); sourceComponent: Component { Menu.NlePlugins { } } }
         }
     }
 
@@ -626,7 +655,11 @@ Rectangle {
         nameFilters: ["*.gyroflow"];
         type: "output-preset";
         property var presetData: ({});
-        onAccepted: controller.export_preset(selectedFile, presetData);
+        onAccepted: {
+            presetData.name = filesystem.get_filename(selectedFile).replace(".gyroflow", "");
+            const saved_to = controller.export_preset(selectedFile, presetData, "file", "");
+            showNotification(Modal.Info, qsTr("Preset saved to %1").arg("<b>" + saved_to + "</b>"))
+        }
     }
 
     Component.onCompleted: {

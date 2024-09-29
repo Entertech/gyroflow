@@ -239,40 +239,28 @@ pub fn set_android_context() {
 pub fn init_logging() {
     use simplelog::*;
 
-    if cfg!(target_os = "macos") && gyroflow_core::filesystem::is_sandboxed() {
-        // Log to macOS's Console app
-        #[cfg(target_os = "macos")]
-        {
-            let logger = oslog::OsLogger::new("xyz.gyroflow").level_filter(LevelFilter::Debug);
-            [ "mp4parse", "wgpu", "naga", "akaze", "ureq", "rustls", "mdk" ]
-                .into_iter()
-                .fold(logger, |cfg, x| cfg.category_level_filter(x, LevelFilter::Warn))
-                .init().unwrap();
-        }
-    } else {
-        let log_config = [ "mp4parse", "wgpu", "naga", "akaze", "ureq", "rustls", "mdk" ]
-            .into_iter()
-            .fold(ConfigBuilder::new(), |mut cfg, x| { cfg.add_filter_ignore_str(x); cfg })
-            .build();
-        let file_log_config = [ "mp4parse", "wgpu", "naga", "akaze", "ureq", "rustls" ]
-            .into_iter()
-            .fold(ConfigBuilder::new(), |mut cfg, x| { cfg.add_filter_ignore_str(x); cfg })
-            .build();
+    let log_config = [ "mp4parse", "wgpu", "naga", "akaze", "ureq", "rustls", "mdk" ]
+        .into_iter()
+        .fold(ConfigBuilder::new(), |mut cfg, x| { cfg.add_filter_ignore_str(x); cfg })
+        .build();
+    let file_log_config = [ "mp4parse", "wgpu", "naga", "akaze", "ureq", "rustls" ]
+        .into_iter()
+        .fold(ConfigBuilder::new(), |mut cfg, x| { cfg.add_filter_ignore_str(x); cfg })
+        .build();
 
-        #[cfg(target_os = "android")]
-        WriteLogger::init(LevelFilter::Debug, log_config, crate::util::AndroidLog::default()).unwrap();
+    #[cfg(target_os = "android")]
+    WriteLogger::init(LevelFilter::Debug, log_config, crate::util::AndroidLog::default()).unwrap();
 
-        #[cfg(not(target_os = "android"))]
-        {
-            let exe_loc = std::env::current_exe().map(|x| x.with_file_name("gyroflow.log")).unwrap_or_else(|_| std::path::PathBuf::from("./gyroflow.log"));
-            if let Ok(file_log) = std::fs::File::create(exe_loc) {
-                let _ = CombinedLogger::init(vec![
-                    TermLogger::new(LevelFilter::Debug, log_config, TerminalMode::Mixed, ColorChoice::Auto),
-                    WriteLogger::new(LevelFilter::Debug, file_log_config, file_log)
-                ]);
-            } else {
-                let _ = TermLogger::init(LevelFilter::Debug, log_config, TerminalMode::Mixed, ColorChoice::Auto);
-            }
+    #[cfg(not(target_os = "android"))]
+    {
+        let exe_loc = gyroflow_core::settings::data_dir().join("gyroflow.log");
+        if let Ok(file_log) = std::fs::File::create(exe_loc) {
+            let _ = CombinedLogger::init(vec![
+                TermLogger::new(LevelFilter::Debug, log_config, TerminalMode::Mixed, ColorChoice::Auto),
+                WriteLogger::new(LevelFilter::Debug, file_log_config, file_log)
+            ]);
+        } else {
+            let _ = TermLogger::init(LevelFilter::Debug, log_config, TerminalMode::Mixed, ColorChoice::Auto);
         }
     }
 
@@ -432,7 +420,23 @@ pub fn save_exe_location() {
                 }
             }
         } else {
-            gyroflow_core::settings::set("exeLocation", exe_path.to_string_lossy().into());
+            #[allow(unused_mut)]
+            let mut exe_str = exe_path.to_string_lossy().to_string();
+
+            #[cfg(target_os = "windows")]
+            if exe_str.contains("29160AdrianRoss.Gyroflow") {
+                let parts = exe_str.split("\\").collect::<Vec<_>>();
+                let parts = parts.into_iter().rev().skip(1).next().unwrap_or("").split("_").collect::<Vec<_>>();
+                if let Some(publisher) = parts.first() {
+                    if let Some(app_id) = parts.last() {
+                        if !publisher.is_empty() && !app_id.is_empty() {
+                            exe_str = format!("shell:AppsFolder\\{publisher}_{app_id}!Gyroflow");
+                        }
+                    }
+                }
+            }
+
+            gyroflow_core::settings::set("exeLocation", exe_str.into());
         }
     }
 }

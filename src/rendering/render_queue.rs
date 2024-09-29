@@ -1164,13 +1164,14 @@ impl RenderQueue {
                             video_speed:               params.video_speed,
                             video_speed_affects_smoothing: params.video_speed_affects_smoothing,
                             video_speed_affects_zooming:   params.video_speed_affects_zooming,
+                            video_speed_affects_zooming_limit: params.video_speed_affects_zooming_limit,
                             of_method:                 params.of_method,
                             adaptive_zoom_method:      params.adaptive_zoom_method,
                             max_zoom:                  params.max_zoom,
                             max_zoom_iterations:       params.max_zoom_iterations,
                             ..Default::default()
                         })),
-                        input_file: Arc::new(RwLock::new(gyroflow_core::InputFile { url: if is_gf_data { String::new() } else { url.clone() }, project_file_url: None, image_sequence_start: 0, image_sequence_fps: 0.0 })),
+                        input_file: Arc::new(RwLock::new(gyroflow_core::InputFile { url: if is_gf_data { String::new() } else { url.clone() }, project_file_url: None, image_sequence_start: 0, image_sequence_fps: 0.0, preset_name: None })),
                         lens_profile_db: stabilizer.lens_profile_db.clone(),
                         ..Default::default()
                     };
@@ -1360,9 +1361,12 @@ impl RenderQueue {
 
                                 Self::update_sync_settings(&stab, &sync_options);
 
+                                // Apply default preset
                                 let default_preset = gyroflow_core::lens_profile_database::LensProfileDatabase::get_path().join("default.gyroflow");
-                                if let Ok(data) = std::fs::read_to_string(default_preset) {
-                                    // Apply default preset
+                                let default_preset2 = gyroflow_core::settings::data_dir().join("lens_profiles").join("default.gyroflow");
+                                if let Ok(data) = std::fs::read_to_string(default_preset2) {
+                                    apply_preset((data, job_id));
+                                } else if let Ok(data) = std::fs::read_to_string(default_preset) {
                                     apply_preset((data, job_id));
                                 }
 

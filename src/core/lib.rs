@@ -55,11 +55,13 @@ lazy_static::lazy_static! {
 }
 
 #[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct InputFile {
     pub url: String,
     pub project_file_url: Option<String>,
     pub image_sequence_fps: f64,
-    pub image_sequence_start: i32
+    pub image_sequence_start: i32,
+    pub preset_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -427,8 +429,14 @@ impl StabilizationManager {
                 let mut any_above_limit = false;
                 for (i, fov) in params.fovs.iter().enumerate() {
                     let ts = crate::timestamp_at_frame(i as i32, params.scaled_fps);
-                    let zoom_limit = (params.keyframes.value_at_video_timestamp(&KeyframeType::MaxZoom, ts).unwrap_or(max_zoom_param) / 100.0) * scaling_factor;
-                    let fov_limit = 1.0 / zoom_limit;
+                    let mut zoom_limit = params.keyframes.value_at_video_timestamp(&KeyframeType::MaxZoom, ts).unwrap_or(max_zoom_param) / 100.0;
+
+                    if params.video_speed_affects_zooming_limit && (params.video_speed != 1.0 || params.keyframes.is_keyframed(&KeyframeType::VideoSpeed)) {
+                        let vid_speed = params.keyframes.value_at_video_timestamp(&KeyframeType::VideoSpeed, ts).unwrap_or(params.video_speed).abs();
+                        zoom_limit *= (1.0 + ((vid_speed - 1.0) / 4.0)).min(1.8);
+                    }
+
+                    let fov_limit = 1.0 / (zoom_limit * scaling_factor);
                     if *fov < fov_limit {
                         any_above_limit = true;
                         params.smoothing_fov_limit_per_frame[i] *= (*fov / fov_limit).min(*thresholds.get(iter).unwrap_or(thresholds.last().unwrap()));
@@ -577,8 +585,14 @@ impl StabilizationManager {
                         let mut any_above_limit = false;
                         for (i, fov) in params.fovs.iter().enumerate() {
                             let ts = crate::timestamp_at_frame(i as i32, params.scaled_fps);
-                            let zoom_limit = (params.keyframes.value_at_video_timestamp(&KeyframeType::MaxZoom, ts).unwrap_or(max_zoom_param) / 100.0) * scaling_factor;
-                            let fov_limit = 1.0 / zoom_limit;
+                            let mut zoom_limit = params.keyframes.value_at_video_timestamp(&KeyframeType::MaxZoom, ts).unwrap_or(max_zoom_param) / 100.0;
+
+                            if params.video_speed_affects_zooming_limit && (params.video_speed != 1.0 || params.keyframes.is_keyframed(&KeyframeType::VideoSpeed)) {
+                                let vid_speed = params.keyframes.value_at_video_timestamp(&KeyframeType::VideoSpeed, ts).unwrap_or(params.video_speed).abs();
+                                zoom_limit *= (1.0 + ((vid_speed - 1.0) / 4.0)).min(1.8);
+                            }
+
+                            let fov_limit = 1.0 / (zoom_limit * scaling_factor);
                             if *fov < fov_limit {
                                 any_above_limit = true;
                                 params.smoothing_fov_limit_per_frame[i] *= (*fov / fov_limit).min(*thresholds.get(iter).unwrap_or(thresholds.last().unwrap()));
@@ -820,21 +834,22 @@ impl StabilizationManager {
         self.invalidate_smoothing();
     }
 
-    pub fn set_video_speed(&self, v: f64, link_with_smoothness: bool, link_with_zooming: bool) {
+    pub fn set_video_speed(&self, v: f64, link_with_smoothness: bool, link_with_zooming: bool, link_with_zooming_limit: bool) {
         let mut params = self.params.write();
         params.video_speed = v;
         params.video_speed_affects_smoothing = link_with_smoothness;
         params.video_speed_affects_zooming = link_with_zooming;
+        params.video_speed_affects_zooming_limit = link_with_zooming_limit;
         self.invalidate_smoothing();
     }
 
-    pub fn disable_lens_stretch(&self) {
+    pub fn disable_lens_stretch(&self, adjust_size: bool) {
         let (x_stretch, y_stretch) = {
             let lens = self.lens.read();
             (lens.input_horizontal_stretch, lens.input_vertical_stretch)
         };
         if (x_stretch > 0.01 && x_stretch != 1.0) || (y_stretch > 0.01 && y_stretch != 1.0) {
-            {
+            if adjust_size {
                 let mut params = self.params.write();
                 params.size.0 = (params.size.0 as f64 * x_stretch).round() as usize;
                 params.size.1 = (params.size.1 as f64 * y_stretch).round() as usize;
@@ -1154,6 +1169,7 @@ impl StabilizationManager {
                 "video_speed":                   params.video_speed,
                 "video_speed_affects_smoothing": params.video_speed_affects_smoothing,
                 "video_speed_affects_zooming":   params.video_speed_affects_zooming,
+                "video_speed_affects_zooming_limit": params.video_speed_affects_zooming_limit,
                 "horizontal_rs":          params.horizontal_rs,
                 "max_zoom":               params.max_zoom,
                 "max_zoom_iterations":    params.max_zoom_iterations,
@@ -1455,8 +1471,9 @@ impl StabilizationManager {
                 if let Some(v) = obj.get("max_zoom_iterations")   .and_then(|x| x.as_i64()) { params.max_zoom_iterations     = v as _; }
 
                 if let Some(v) = obj.get("video_speed").and_then(|x| x.as_f64()) { params.video_speed = v; }
-                if let Some(v) = obj.get("video_speed_affects_smoothing").and_then(|x| x.as_bool()) { params.video_speed_affects_smoothing = v; }
-                if let Some(v) = obj.get("video_speed_affects_zooming")  .and_then(|x| x.as_bool()) { params.video_speed_affects_zooming   = v; }
+                if let Some(v) = obj.get("video_speed_affects_smoothing")    .and_then(|x| x.as_bool()) { params.video_speed_affects_smoothing     = v; }
+                if let Some(v) = obj.get("video_speed_affects_zooming")      .and_then(|x| x.as_bool()) { params.video_speed_affects_zooming       = v; }
+                if let Some(v) = obj.get("video_speed_affects_zooming_limit").and_then(|x| x.as_bool()) { params.video_speed_affects_zooming_limit = v; }
 
                 if let Some(center_offs) = obj.get("adaptive_zoom_center_offset").and_then(|x| x.as_array()) {
                     params.adaptive_zoom_center_offset = (
@@ -1595,6 +1612,15 @@ impl StabilizationManager {
 
             {
                 let mut input_file = self.input_file.write();
+                if *is_preset {
+                    if let Some(name) = obj.get("name").and_then(|x| x.as_str()) {
+                        input_file.preset_name = Some(name.into());
+                    } else if let Some(url) = url {
+                        input_file.preset_name = Some(filesystem::get_filename(url).replace(".gyroflow", ""));
+                    } else {
+                        input_file.preset_name = Some("Untitled".into());
+                    }
+                }
                 if let Some(seq_start) = obj.get("image_sequence_start").and_then(|x| x.as_i64()) {
                     input_file.image_sequence_start = seq_start as i32;
                 }
@@ -1675,15 +1701,13 @@ impl StabilizationManager {
             self.init_from_video_data(metadata.duration_s * 1000.0, metadata.fps, frame_count, video_size);
             let _ = self.load_gyro_data(url, true, &Default::default(), |_|(), Arc::new(AtomicBool::new(false)));
 
-            let camera_id = self.camera_id.read();
-
             let has_builtin_profile = {
                 let gyro = self.gyro.read();
                 let file_metadata = gyro.file_metadata.read();
                 file_metadata.lens_profile.as_ref().map(|y| y.is_object()).unwrap_or_default()
             };
 
-            let id_str = camera_id.as_ref().map(|v| v.get_identifier_for_autoload()).unwrap_or_default();
+            let id_str = self.camera_id.read().as_ref().map(|v| v.get_identifier_for_autoload()).unwrap_or_default();
             if !id_str.is_empty() && !has_builtin_profile {
                 let mut db = self.lens_profile_db.read();
                 if !db.loaded {
@@ -1716,6 +1740,15 @@ impl StabilizationManager {
             }
             self.set_size(video_size.0, video_size.1);
             self.set_output_size(output_width, output_height);
+
+            // Apply default preset
+            let local_path = lens_profile_database::LensProfileDatabase::get_path().join("default.gyroflow");
+            let settings_path = settings::data_dir().join("lens_profiles").join("default.gyroflow");
+            if settings_path.exists() {
+                let _ = self.import_gyroflow_file(&settings_path.to_str().unwrap(), true, |_|(), Arc::new(AtomicBool::new(false)));
+            } else if local_path.exists() {
+                let _ = self.import_gyroflow_file(&local_path.to_str().unwrap(), true, |_|(), Arc::new(AtomicBool::new(false)));
+            }
         }
         Ok(metadata)
     }
