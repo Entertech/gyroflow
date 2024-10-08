@@ -240,11 +240,7 @@ pub fn render<F, F2>(stab: Arc<StabilizationManager>, progress: F, input_file: &
         _ => { }
     }
 
-    let interpolation = match render_options.interpolation.as_ref() {
-        "Bilinear"  => Interpolation::Bilinear,
-        "Bicubic"   => Interpolation::Bicubic,
-        _ => Interpolation::Lanczos4
-    };
+    let interpolation: Interpolation = render_options.interpolation.as_str().into();
     let ffmpeg_interpolation = match interpolation {
         Interpolation::Bilinear => ffmpeg_next::software::scaling::flag::Flags::BILINEAR,
         Interpolation::Bicubic  => ffmpeg_next::software::scaling::flag::Flags::BICUBIC,

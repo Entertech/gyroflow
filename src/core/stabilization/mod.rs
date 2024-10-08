@@ -25,7 +25,25 @@ pub enum Interpolation {
     #[default]
     Bilinear = 2,
     Bicubic  = 4,
-    Lanczos4 = 8
+    Lanczos4 = 8,
+    RobidouxSharp = 10,
+    Robidoux = 11,
+    Mitchell = 12,
+    CatmullRom = 13
+}
+impl From<&str> for Interpolation {
+    fn from(s: &str) -> Self {
+        match s {
+            "Bilinear"           => Interpolation::Bilinear,
+            "Bicubic"            => Interpolation::Bicubic,
+            "Lanczos4"           => Interpolation::Lanczos4,
+            "EWA: RobidouxSharp" => Interpolation::RobidouxSharp,
+            "EWA: Robidoux"      => Interpolation::Robidoux,
+            "EWA: Mitchell"      => Interpolation::Mitchell,
+            "EWA: Catmull-Rom"   => Interpolation::CatmullRom,
+            _ => Interpolation::Lanczos4
+        }
+    }
 }
 
 struct ThreadLocalWgpuCache(RefCell<lru::LruCache<u32, wgpu::WgpuWrapper>>);
@@ -107,6 +125,8 @@ pub struct KernelParams {
     pub plane_index:              i32, // 8
     pub reserved1:                f32, // 12
     pub reserved2:                f32, // 16
+    pub ewa_coeffs_p:             [f32; 4], // 16
+    pub ewa_coeffs_q:             [f32; 4], // 16
 }
 unsafe impl bytemuck::Zeroable for KernelParams {}
 unsafe impl bytemuck::Pod for KernelParams {}
@@ -218,6 +238,24 @@ impl Stabilization {
 
         transform.kernel_params.stride        = buffers.input.size.2 as i32;
         transform.kernel_params.output_stride = buffers.output.size.2 as i32;
+
+        if transform.kernel_params.interpolation > 8 {
+            let (b, c) = match self.interpolation {
+                Interpolation::RobidouxSharp => (0.2620145, 0.3689927),
+                Interpolation::Robidoux      => (0.3782157, 0.3108921),
+                Interpolation::Mitchell      => (0.3333333, 0.3333333),
+                Interpolation::CatmullRom    => (0.0000000, 0.5000000),
+                _ => (0.0, 0.0)
+            };
+            transform.kernel_params.ewa_coeffs_p[0] = (6.0 - 2.0 * b) / 6.0;
+            transform.kernel_params.ewa_coeffs_p[1] = 0.0;
+            transform.kernel_params.ewa_coeffs_p[2] = (-18.0 + 12.0 * b + 6.0 * c) / 6.0;
+            transform.kernel_params.ewa_coeffs_p[3] = (12.0 - 9.0 * b - 6.0 * c) / 6.0;
+            transform.kernel_params.ewa_coeffs_q[0] = (8.0 * b + 24.0 * c) / 6.0;
+            transform.kernel_params.ewa_coeffs_q[1] = (-12.0 * b - 48.0 * c) / 6.0;
+            transform.kernel_params.ewa_coeffs_q[2] = (6.0 * b + 30.0 * c) / 6.0;
+            transform.kernel_params.ewa_coeffs_q[3] = (-1.0 * b - 6.0 * c) / 6.0;
+        }
 
         let sa_fov =
             if self.compute_params.show_safe_area || self.compute_params.fov_overview  {
@@ -406,7 +444,7 @@ impl Stabilization {
                     Ok(Ok(cl)) => {
                         self.cl = Some(cl);
                         self.initialized_backend = BackendType::OpenCL(hash);
-                        log::info!("Initialized OpenCL for {:?} -> {:?}", buffers.input.size, buffers.output.size);
+                        log::info!("Initialized OpenCL for {:?} -> {:?}, key: {}", buffers.input.size, buffers.output.size, self.get_current_key(buffers));
                     },
                     Ok(Err(e)) => { next_backend = ""; log::error!("OpenCL error init_backends: {:?}", e); },
                     Err(e) => {
@@ -565,6 +603,10 @@ impl Stabilization {
                 Interpolation::Bilinear => { Self::undistort_image_cpu::<2, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
                 Interpolation::Bicubic  => { Self::undistort_image_cpu::<4, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
                 Interpolation::Lanczos4 => { Self::undistort_image_cpu::<8, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
+                Interpolation::RobidouxSharp => { Self::undistort_image_cpu::<10, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
+                Interpolation::Robidoux      => { Self::undistort_image_cpu::<11, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
+                Interpolation::Mitchell      => { Self::undistort_image_cpu::<12, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
+                Interpolation::CatmullRom    => { Self::undistort_image_cpu::<13, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
             };
             if ok {
                 ret.backend = "CPU";

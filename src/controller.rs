@@ -230,7 +230,6 @@ pub struct Controller {
     set_digital_lens_param: qt_method!(fn(&self, index: usize, value: f64)),
 
     get_username: qt_method!(fn(&self) -> QString),
-    clear_settings: qt_method!(fn(&self)),
     copy_to_clipboard: qt_method!(fn(&self, text: QString)),
 
     image_to_b64: qt_method!(fn(&self, img: QImage) -> QString),
@@ -1320,7 +1319,7 @@ impl Controller {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
             cancel_flag.store(false, SeqCst);
-            finished(stab.import_gyroflow_file(&url, false, progress, cancel_flag));
+            finished(stab.import_gyroflow_file(&url, false, progress, cancel_flag, false));
         });
     }
     fn import_gyroflow_data(&mut self, data: QString) {
@@ -1348,7 +1347,7 @@ impl Controller {
             }
             cancel_flag.store(false, SeqCst);
             let mut is_preset = false;
-            finished(stab.import_gyroflow_data(data.to_string().as_bytes(), false, None, progress, cancel_flag, &mut is_preset));
+            finished(stab.import_gyroflow_data(data.to_string().as_bytes(), false, None, progress, cancel_flag, &mut is_preset, false));
         });
     }
     fn import_gyroflow_internal(&mut self, result: Result<serde_json::Value, gyroflow_core::GyroflowCoreError>) -> QJsonObject {
@@ -1814,7 +1813,7 @@ impl Controller {
         let text = text.to_string();
         let favorites = HashSet::<String>::from_iter(favorites.into_iter().map(|x| x.to_qbytearray().to_string()));
         core::run_threaded(move || {
-            let profiles = db.read().search(&text, &favorites, aspect_ratio, aspect_ratio_swapped).into_iter().map(|(name, file, crc, official, rating, aspect_ratio)| {
+            let profiles = db.read().search(&text, &favorites, aspect_ratio, aspect_ratio_swapped).into_iter().map(|(name, file, crc, official, rating, aspect_ratio, _author)| {
                 let mut list = QVariantList::from_iter([
                     QString::from(name),
                     QString::from(file),
@@ -2128,6 +2127,37 @@ impl Controller {
         let mut sync_points = Vec::new();
         let mut time_scale = 0.001; // default to millisecond
         let mut headers_end_position = None;
+
+        let do_add_timestamp = || -> Option<bool> {
+            let mut last_timestamp = None;
+            for x in file_list {
+                let gcsv_name = filesystem::filename_with_extension(&filesystem::get_filename(x), "gcsv");
+                let gcsv_url = filesystem::get_file_url(&filesystem::get_folder(x), &gcsv_name, false);
+                let mut file = filesystem::open_file(&base, &gcsv_url, false, false).ok()?;
+                let mut is_data = false;
+                for line in std::io::BufReader::new(file.get_file()).lines() {
+                    let line = line.ok()?;
+                    if !is_data {
+                        if line.starts_with("t,") || line.starts_with("time,") {
+                            is_data = true;
+                            continue;
+                        }
+                    } else if line.contains(',') {
+                        if let Ok(timestamp) = line.split(',').next().unwrap().parse::<f64>() {
+                            if let Some(last_timestamp) = last_timestamp {
+                                // If timestamp is not continuous
+                                if timestamp < last_timestamp {
+                                    return Some(true);
+                                }
+                            }
+                            last_timestamp = Some(timestamp);
+                        }
+                    }
+                }
+            }
+            Some(false)
+        }().unwrap_or(true);
+
         for x in file_list {
             let filename = filesystem::get_filename(x);
             let folder = filesystem::get_folder(x);
@@ -2169,9 +2199,6 @@ impl Controller {
                             if let Ok(timestamp) = line.split(',').next().unwrap().parse::<f64>() {
                                 last_diff = timestamp - last_timestamp;
                                 last_timestamp = timestamp;
-                                if timestamp >= add_timestamp {
-                                    add_timestamp = 0.0;
-                                }
                                 let new_timestamp = timestamp + add_timestamp;
                                 line = [new_timestamp.to_string()].into_iter().chain(line.split(',').skip(1).map(str::to_string)).join(",");
                             }
@@ -2181,7 +2208,9 @@ impl Controller {
                         }
                     }
                 }
-                add_timestamp += last_timestamp + last_diff;
+                if do_add_timestamp {
+                    add_timestamp += last_timestamp + last_diff;
+                }
                 last_timestamp = 0.0;
             }
             first_file = false;
@@ -2243,6 +2272,13 @@ impl Controller {
         let mut processed = 0;
 
         let stab = self.stabilizer.clone();
+        {
+            let params = stab.params.read();
+            if params.size.0 <= 0 || params.size.1 <= 0 {
+                self.error(QString::from("An error occured: %1"), QString::from("Video is not loaded"), QString::default());
+                return;
+            }
+        }
 
         core::run_threaded(move || {
             progress((0, total));
@@ -2307,7 +2343,6 @@ impl Controller {
     // Utilities
     fn get_username(&self) -> QString { let realname = whoami::realname(); QString::from(if realname.is_empty() { whoami::username() } else { realname }) }
     fn image_to_b64(&self, img: QImage) -> QString { util::image_to_b64(img) }
-    fn clear_settings(&self) { gyroflow_core::settings::clear() }
     fn copy_to_clipboard(&self, text: QString) { util::copy_to_clipboard(text) }
 }
 
